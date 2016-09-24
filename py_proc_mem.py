@@ -2,6 +2,7 @@ import os
 import string
 import sys
 import re
+import itertools
 
 from collections import namedtuple
 
@@ -21,6 +22,18 @@ def strings(bytes, min=4):
             yield result
         result = ""
 
+# From https://stackoverflow.com/questions/6822725/rolling-or-sliding-window-iterator-in-python
+def window(seq, n=2):
+    "Returns a sliding window (of width n) over data from the iterable"
+    "   s -> (s0,s1,...s[n-1]), (s1,s2,...,sn), ...                   "
+    it = iter(seq)
+    result = tuple(itertools.islice(it, n))
+    if len(result) == n:
+        yield result    
+    for elem in it:
+        result = result[1:] + (elem,)
+        yield result
+
 class Process:
     
     def __init__(self, pid):
@@ -37,13 +50,17 @@ class Process:
                 pieces = line.split()
 
                 start, end = (int(n, 16) for n in pieces[0].split('-'))
+
+                perm_string = pieces[1]
+                perms = MapPerms('r' in perm_string, 'w' in perm_string, 'x' in perm_string)
+
                 name = None
                 try: 
                     name = pieces[5]
                 except:
                     pass
 
-                maps.append(MemMap(self.pid, MemRange(start, end), name))
+                maps.append(MemMap(self.pid, MemRange(start, end), name, perms))
         return maps
 
     def get_heap_map(self):
@@ -52,7 +69,7 @@ class Process:
         except StopIteration:
             return None
 
-        
+MapPerms = namedtuple('MapPerms', ['read', 'write', 'execute'])
 
 class MemRange(namedtuple('MemRange', ['start', 'end'])):
     @property 
@@ -60,10 +77,11 @@ class MemRange(namedtuple('MemRange', ['start', 'end'])):
         return self.end - self.start
 
 class MemMap:
-    def __init__(self, pid, memrange, name):
+    def __init__(self, pid, memrange, name, perms = MapPerms(True, False, False)):
         self.pid = pid
         self.range = memrange
         self.name = name
+        self.perms = perms
 
     @property
     def mem_file_path(self):
@@ -76,7 +94,14 @@ class MemMap:
 
         return data
 
+    @property
+    def can_write(self):
+        return self.perms.write
+
     def write_data(self, pos, data):
+        if not self.can_write:
+            raise RuntimeError("Map is read only!")
+
         with open(self.mem_file_path, 'wb') as f:
             f.seek(pos)
             f.write(data)
@@ -86,13 +111,12 @@ class MemMap:
         reg = re.escape(seq)
         return map(lambda m: m.start() + self.range.start, re.finditer(reg, data))
 
-    def replace_sequence(self, seq, replacement):
+    def replace_sequence(self, seq, replacement, fallback_encoding='utf-8'):
         if type(seq) is str:
-            seq = bytes(seq, 'utf-8')
+            seq = bytes(seq, fallback_encoding)
 
         if type(replacement) is str:
-            replacement = bytes(replacement, 'utf-8')
-
+            replacement = bytes(replacement, fallback_encoding)
         
         count = 0
         for index in self.find_sequence(seq):
@@ -100,13 +124,16 @@ class MemMap:
             count += 1
 
         return count
+
+    
+
 def main():
 
     p = Process(int(sys.argv[1]))
-    # for a in strings(p.get_heap_map().read_data(), min=7):
-    #     print(a)
 
-    print(p.get_heap_map().replace_sequence("{", "}"))
+    for s in strings(p.get_heap_map().read_data(), 50): print(s)
+
+    #print(p.get_heap_map().replace_sequence("e", "o"))
 
 if __name__ == '__main__':
     main()
