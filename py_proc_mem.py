@@ -4,6 +4,7 @@ import sys
 import re
 import itertools
 import signal
+import hashlib
 
 from collections import namedtuple
 
@@ -58,13 +59,15 @@ class Process:
                 perm_string = pieces[1]
                 perms = MapPerms('r' in perm_string, 'w' in perm_string, 'x' in perm_string)
 
+                inode = int(pieces[4])
+
                 name = None
                 try: 
                     name = pieces[5]
                 except:
                     pass
 
-                maps.append(MemMap(self.pid, MemRange(start, end), name, perms))
+                maps.append(MemMap(self.pid, MemRange(start, end), name, perms, inode))
         return maps
 
     def get_map_by_name(self, name):
@@ -104,15 +107,20 @@ class OutsideOfMapException(Exception):
     pass
 
 class MemMap:
-    def __init__(self, pid, memrange, name, perms = MapPerms(True, False, False)):
+    def __init__(self, pid, memrange, name, perms = MapPerms(True, False, False), inode=0):
         self.pid = pid
         self.range = memrange
         self.name = name
         self.perms = perms
+        self.inode = inode
 
     @property
     def mem_file_path(self):
         return os.path.join(proc_dir_path(self.pid), 'mem')
+
+    @property
+    def is_file(self):
+        return self.inode != 0
 
     def read_data(self):
         return self.read_range(self.range)
@@ -171,7 +179,7 @@ class MemMap:
 
         return count
 
-    def __str__(self):
+    def __repr__(self):
         return "Map {} {:x}-{:x}".format(self.name, self.range.start, self.range.end)
 
 
@@ -188,7 +196,7 @@ def multi_change(mmap):
 
         new_data = mmap.read_data()
 
-        diffs = list(map(lambda d: d.pos, binary_diff.bin_diff(lastdata, new_data)))
+        diffs = list(map(lambda d: d.pos, binary_diff.bin_diff(lastdata, new_data, restrict_to = lastdiffs)))
         
         if lastdiffs is None:
             lastdiffs = diffs
@@ -204,12 +212,31 @@ def multi_change(mmap):
 
     return lastdiffs
 
+
+def repl(p):
+    def detect_changed_maps():
+        interesting_maps = [m for m in p.get_maps() if (not m.is_file) and m.can_write]
+        def map_hashes():
+            return {m: hashlib.sha1(m.read_data()).hexdigest() for m in interesting_maps}
+        print("Reading maps")
+        first_hashes = map_hashes()
+        input("Hit enter when something hash changed: ")
+        print("Reading maps again")
+        second_hashes = map_hashes()
+        for map in interesting_maps:
+            if first_hashes[map] != second_hashes[map]:
+                yield map
+        
+    import code
+    code.interact(local=dict(globals(), **locals()))
+
 def main():
     import time
 
     p = Process(int(sys.argv[1]))
+    repl(p)
 
-    varmap = list(p.get_nameless_maps())[2]
+    # varmap = list(p.get_nameless_maps())[2]
 
     #print("\n".join(strings(varmap.read_data())))
 
@@ -218,7 +245,7 @@ def main():
     # heap = p.get_heap_map()
     # print(heap)
 
-    print(multi_change(varmap))
+    # print(multi_change(varmap))
 
     # d1 = varmap.read_data()
     # input("Snapshot taken. Hit enter when ready:")
