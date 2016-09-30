@@ -85,6 +85,9 @@ class Process:
     def get_nameless_maps(self):
         return filter(lambda m: m.name is None, self.get_maps())
 
+    def get_map_by_id(self, id):
+        return list(filter(lambda m: m.id == id, self.get_maps()))[0]
+
     def suspend(self):
         os.kill(self.pid, signal.SIGSTOP)
 
@@ -101,7 +104,7 @@ class MemRange(namedtuple('MemRange', ['start', 'end'])):
         return self.end - self.start
 
     def is_inside(self, other):
-        return other.start >= self.start and other.end <= self.end
+        return self.start >= other.start and self.end <= other.end
 
 class OutsideOfMapException(Exception):
     pass
@@ -117,6 +120,13 @@ class MemMap:
     @property
     def mem_file_path(self):
         return os.path.join(proc_dir_path(self.pid), 'mem')
+
+    @property
+    def id(self):
+        h = hashlib.sha1()
+        h.update(str(self.range.start).encode())
+        h.update(str(self.range.end).encode())
+        return h.hexdigest()[:3]
 
     @property
     def is_file(self):
@@ -180,7 +190,7 @@ class MemMap:
         return count
 
     def __repr__(self):
-        return "Map {} {:x}-{:x}".format(self.name, self.range.start, self.range.end)
+        return "Map {}, {} {:x}-{:x} ({} kb)".format(self.id, self.name, self.range.start, self.range.end, self.range.size / 1024)
 
 
 def multi_change(mmap):
@@ -196,21 +206,22 @@ def multi_change(mmap):
 
         new_data = mmap.read_data()
 
-        diffs = list(map(lambda d: d.pos, binary_diff.bin_diff(lastdata, new_data, restrict_to = lastdiffs)))
+        diffs = set(map(lambda d: d.pos, binary_diff.bin_diff(lastdata, new_data, restrict_to = lastdiffs)))
         
         if lastdiffs is None:
             lastdiffs = diffs
         else:
             if not same_mode:
-                lastdiffs = [p for p in diffs if p in lastdiffs]
+                #lastdiffs = [p for p in diffs if p in lastdiffs]
+                lastdiffs = lastdiffs.intersection(diffs)
             else:
-                lastdiffs = [p for p in lastdiffs if p not in diffs]
+                lastdiffs = lastdiffs.difference(diffs)
 
         lastdata = new_data
 
         print("{} changes, {} retained".format(len(diffs), len(lastdiffs)))
 
-    return lastdiffs
+    return set(diff + mmap.range.start for diff in lastdiffs)
 
 
 def repl(p):
